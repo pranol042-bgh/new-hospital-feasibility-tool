@@ -53,9 +53,9 @@ const SERVICE_LABELS = {
 };
 
 const DEFAULT_BASE = {
-  catchmentDemand: 45000,
-  obsPoolBase: 400,
-  pedY3Base: 3000,
+  catchmentDemand: 3750,
+  obsPoolBase: 33,
+  pedY3Base: 250,
   specialtyEligibleRate: 0.45,
   specialtyBaseVisits: 200,
   admitRate: 0.2,
@@ -98,6 +98,8 @@ const ACUITY_DEFAULT = [
 const DEFAULT_SVC_REV = { obs: 25000, opd: 2800, wound: 3000, ped: 4000 };
 const DEFAULT_MARGIN = { er: 50, obs: 50, opd: 50, wound: 50, ped: 50 };
 const DEFAULT_SCEN = { er: "R", obs: "R", opd: "R", wound: "R", ped: "R" };
+const DEFAULT_SERVICES = { er: true, obs: true, opd: true, wound: true, ped: true };
+const TOGGLEABLE_SERVICES = ["obs", "opd", "wound", "ped"];
 
 const CAPACITY_ROW_META = [
   { key: "erHoriz", label: "ER horizontal", supply: "Resus + trauma bays", unitName: "bays", facilityKey: "erBays", capPerUnit: 24 / 4, staffHours: 1.4, staffDays: 365 },
@@ -121,8 +123,10 @@ function scenarioHint(key, tier, tiers) {
   return "";
 }
 
-function computeModel({ scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers }) {
-  const catchment = base.catchmentDemand;
+function computeModel({ scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers, services }) {
+  const catchment = base.catchmentDemand * 12;
+  const obsPoolAnnual = base.obsPoolBase * 12;
+  const pedY3Annual = base.pedY3Base * 12;
   const mix = esi.reduce((s, x) => s + x.mix, 0) || 1;
   const erRev = esi.reduce((s, x) => s + (x.mix / mix) * x.rev, 0);
   const years = [];
@@ -137,18 +141,18 @@ function computeModel({ scen, growth, rent, capex, infl, margin, esi, svcRev, ba
     const cap = y <= 3 ? tiers.capture[scen.er][y - 1] : y === 4 ? cap3 + 0.05 : cap3 + 0.1;
     const grow = Math.pow(1 + growth, y);
     const er = catchment * grow * cap;
-    const obs = base.obsPoolBase * tiers.obsCap[scen.obs] * Math.pow(1 + growth, y - 1);
-    const opd = er * tiers.opdRatio[scen.opd];
-    const wound = er * base.specialtyEligibleRate * 0.35 * tiers.specialtyMult[scen.wound] + base.specialtyBaseVisits * grow;
-    const pedBase = base.pedY3Base * tiers.pedFactor[scen.ped];
-    const ped = y <= 3 ? pedBase * Math.min(cap / cap3, 1) : pedBase * Math.pow(1 + growth, y - 3);
+    const obs = services.obs ? obsPoolAnnual * tiers.obsCap[scen.obs] * Math.pow(1 + growth, y - 1) : 0;
+    const opd = services.opd ? er * tiers.opdRatio[scen.opd] : 0;
+    const wound = services.wound ? er * base.specialtyEligibleRate * 0.35 * tiers.specialtyMult[scen.wound] + base.specialtyBaseVisits * grow : 0;
+    const pedBase = pedY3Annual * tiers.pedFactor[scen.ped];
+    const ped = services.ped ? (y <= 3 ? pedBase * Math.min(cap / cap3, 1) : pedBase * Math.pow(1 + growth, y - 3)) : 0;
     const revER = (er * erRev) / 1e6;
     const revObs = (obs * svcRev.obs) / 1e6;
     const revOPD = (opd * svcRev.opd) / 1e6;
     const revWound = (wound * svcRev.wound) / 1e6;
     const revPed = (ped * svcRev.ped) / 1e6;
     const spokeRev = revER + revObs + revOPD + revWound + revPed;
-    const downstream = (er * base.admitRate * base.admitValue * base.groupCapture) / 1e6 + base.pedDownstreamMax * Math.min(ped / base.pedY3Base, 1.5);
+    const downstream = (er * base.admitRate * base.admitValue * base.groupCapture) / 1e6 + (services.ped && pedY3Annual > 0 ? base.pedDownstreamMax * Math.min(ped / pedY3Annual, 1.5) : 0);
     const inf = Math.pow(1 + infl, y - 1);
     const laborStep = (y >= 4 ? (er / 365 > 40 ? 9 : er / 365 > 30 ? 4.5 : 0) : 0) * inf;
     const variable =
@@ -235,6 +239,7 @@ export default function NewHospitalApp() {
 
   const [projectName, setProjectName] = useState("New Hospital Project");
   const [location, setLocation] = useState("");
+  const [services, setServices] = useState(DEFAULT_SERVICES);
   const [base, setBase] = useState(DEFAULT_BASE);
   const [facility, setFacility] = useState(DEFAULT_FACILITY);
   const [tiers, setTiers] = useState(DEFAULT_TIERS);
@@ -252,6 +257,7 @@ export default function NewHospitalApp() {
   const C = dark ? DARK : LIGHT;
   const capex = capexParts.construction + capexParts.equipment + capexParts.it;
 
+  const toggleService = (key) => setServices({ ...services, [key]: !services[key] });
   const setBaseField = (key, value) => setBase({ ...base, [key]: value });
   const setMktField = (i, value) => setBase({ ...base, mkt: base.mkt.map((v, idx) => (idx === i ? value : v)) });
   const setFeeField = (i, value) => setBase({ ...base, fee: base.fee.map((v, idx) => (idx === i ? value : v)) });
@@ -336,10 +342,35 @@ export default function NewHospitalApp() {
                 <span className="block mb-1" style={{ color: C.muted }}>Location / notes (optional)</span>
                 <input className="w-full px-2 py-2 rounded border" value={location} onChange={(e) => setLocation(e.target.value)} style={{ borderColor: C.line, background: C.card, color: C.ink }} />
               </label>
-              <Slider C={C} label="Annual catchment ED-eligible demand" value={base.catchmentDemand} set={(v) => setBaseField("catchmentDemand", v)} min={5000} max={150000} step={500} format={(v) => `${v.toLocaleString()} visits/yr`} />
-              <Slider C={C} label="Baseline observation-eligible pool" value={base.obsPoolBase} set={(v) => setBaseField("obsPoolBase", v)} min={50} max={2000} step={10} format={(v) => `${v.toLocaleString()} cases/yr`} />
-              <Slider C={C} label="Baseline Y3 pediatric demand" value={base.pedY3Base} set={(v) => setBaseField("pedY3Base", v)} min={0} max={10000} step={100} format={(v) => `${v.toLocaleString()} visits/yr`} />
-              <Slider C={C} label="Specialty-eligible visit rate" value={base.specialtyEligibleRate} set={(v) => setBaseField("specialtyEligibleRate", v)} min={0} max={1} step={0.01} format={(v) => `${(v * 100).toFixed(0)}%`} />
+              <div className="mb-4 text-sm">
+                <span className="block mb-2" style={{ color: C.muted }}>Which services will this facility offer?</span>
+                <div className="flex flex-wrap gap-2">
+                  <span className="px-3 py-1.5 rounded text-xs font-bold" style={{ background: C.navy, color: "#fff", border: `1px solid ${C.navy}`, opacity: 0.85 }}>
+                    {SERVICE_LABELS.er} (required)
+                  </span>
+                  {TOGGLEABLE_SERVICES.map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => toggleService(key)}
+                      className="px-3 py-1.5 rounded text-xs font-bold"
+                      style={{ background: services[key] ? C.navy : C.hilite, color: services[key] ? "#fff" : C.navy, border: `1px solid ${services[key] ? C.navy : C.line}` }}
+                    >
+                      {SERVICE_LABELS[key]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Slider C={C} label="Monthly catchment ED-eligible demand" value={base.catchmentDemand} set={(v) => setBaseField("catchmentDemand", v)} min={400} max={12500} step={50} format={(v) => `${v.toLocaleString()} visits/mo`} />
+              {services.obs && (
+                <Slider C={C} label="Monthly observation-eligible pool" value={base.obsPoolBase} set={(v) => setBaseField("obsPoolBase", v)} min={5} max={170} step={5} format={(v) => `${v.toLocaleString()} cases/mo`} />
+              )}
+              {services.ped && (
+                <Slider C={C} label="Monthly Y3 pediatric demand" value={base.pedY3Base} set={(v) => setBaseField("pedY3Base", v)} min={0} max={850} step={10} format={(v) => `${v.toLocaleString()} visits/mo`} />
+              )}
+              {services.wound && (
+                <Slider C={C} label="Specialty-eligible visit rate" value={base.specialtyEligibleRate} set={(v) => setBaseField("specialtyEligibleRate", v)} min={0} max={1} step={0.01} format={(v) => `${(v * 100).toFixed(0)}%`} />
+              )}
               <Slider C={C} label="ER downstream admission rate" value={base.admitRate} set={(v) => setBaseField("admitRate", v)} min={0} max={0.5} step={0.01} format={(v) => `${(v * 100).toFixed(0)}%`} />
             </Panel>
           )}
@@ -350,10 +381,18 @@ export default function NewHospitalApp() {
               <div className="text-xs mt-1 mb-3" style={{ color: C.muted }}>How many bays, chairs, beds, and rooms will the facility have? You can fine-tune these later on the dashboard too.</div>
               <Slider C={C} label="ER bays (Resus + trauma)" value={facility.erBays} set={(v) => setFacilityField("erBays", v)} min={1} max={20} step={1} format={(v) => `${v} bays`} />
               <Slider C={C} label="RAZ recliner chairs" value={facility.razChairs} set={(v) => setFacilityField("razChairs", v)} min={0} max={20} step={1} format={(v) => `${v} chairs`} />
-              <Slider C={C} label="Observation beds" value={facility.obsBeds} set={(v) => setFacilityField("obsBeds", v)} min={0} max={20} step={1} format={(v) => `${v} beds`} />
-              <Slider C={C} label="OPD General rooms" value={facility.opdRooms} set={(v) => setFacilityField("opdRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
-              <Slider C={C} label="Pediatric OPD rooms" value={facility.pedRooms} set={(v) => setFacilityField("pedRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
-              <Slider C={C} label="Specialty / procedure rooms" value={facility.procRooms} set={(v) => setFacilityField("procRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
+              {services.obs && (
+                <Slider C={C} label="Observation beds" value={facility.obsBeds} set={(v) => setFacilityField("obsBeds", v)} min={0} max={20} step={1} format={(v) => `${v} beds`} />
+              )}
+              {services.opd && (
+                <Slider C={C} label="OPD General rooms" value={facility.opdRooms} set={(v) => setFacilityField("opdRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
+              )}
+              {services.ped && (
+                <Slider C={C} label="Pediatric OPD rooms" value={facility.pedRooms} set={(v) => setFacilityField("pedRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
+              )}
+              {services.wound && (
+                <Slider C={C} label="Specialty / procedure rooms" value={facility.procRooms} set={(v) => setFacilityField("procRooms", v)} min={0} max={10} step={1} format={(v) => `${v} rooms`} />
+              )}
               <Slider C={C} label="Baseline staffed FTE" value={base.staffBaselineFte} set={(v) => setBaseField("staffBaselineFte", v)} min={5} max={100} step={1} format={(v) => `${v} FTE`} />
             </Panel>
           )}
@@ -406,6 +445,7 @@ export default function NewHospitalApp() {
     <DashboardStage
       C={C}
       header={header}
+      services={services}
       scen={scen}
       setScen={setScen}
       growth={growth}
@@ -437,11 +477,11 @@ export default function NewHospitalApp() {
 }
 
 function DashboardStage({
-  C, header, scen, setScen, growth, setGrowth, infl, setInfl, capexParts, setCapexParts, rent, setRent, capex,
+  C, header, services, scen, setScen, growth, setGrowth, infl, setInfl, capexParts, setCapexParts, rent, setRent, capex,
   view, setView, margin, setMargin, esi, setEsi, svcRev, setSvcRev, base, setBaseField, facility, setFacilityField,
   tiers, setTiersCaptureField, setTiersScalarField,
 }) {
-  const data = useMemo(() => computeModel({ scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers }), [scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers]);
+  const data = useMemo(() => computeModel({ scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers, services }), [scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers, services]);
   const y3 = data.years[2];
   const daily = (y3.er + y3.obs + y3.opd + y3.wound + y3.ped) / 365;
   const pbColor = (pb) => (pb == null ? "#7A1024" : pb <= 5 ? C.green : pb <= 7 ? C.amber : C.red);
@@ -479,7 +519,10 @@ function DashboardStage({
     });
   };
 
-  const capacity = useMemo(() => buildCapacityRows(y3), [esi, y3, facility]);
+  const capacity = useMemo(
+    () => buildCapacityRows(y3).filter((row) => row.key === "erHoriz" || row.key === "raz" || services[row.key]),
+    [esi, y3, facility, services],
+  );
   const totalPeakFte = capacity.reduce((sum, row) => sum + row.peakFte, 0);
   const yearlySupply = useMemo(() => data.years.map((yearData) => {
     const rows = buildCapacityRows(yearData);
@@ -491,7 +534,7 @@ function DashboardStage({
   }), [data.years, esi, facility, base.staffBaselineFte]);
 
   const tornado = useMemo(() => {
-    const baseInputs = { scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers };
+    const baseInputs = { scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers, services };
     const payback = (inputs) => computeModel(inputs).payG ?? 11;
     const basePb = payback(baseInputs);
     const scaleEsi = (factor) => esi.map((row) => ({ ...row, rev: row.rev * factor }));
@@ -514,10 +557,28 @@ function DashboardStage({
     rows.sort((a, b) => Math.max(Math.abs(b.dLo), Math.abs(b.dHi)) - Math.max(Math.abs(a.dLo), Math.abs(a.dHi)));
     const maxAbs = Math.max(0.05, ...rows.flatMap((row) => [Math.abs(row.dLo), Math.abs(row.dHi)]));
     return { basePb, rows, maxAbs };
-  }, [scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers]);
+  }, [scen, growth, rent, capex, infl, margin, esi, svcRev, base, tiers, services]);
 
   const setAllScenarios = (s) => setScen({ er: s, obs: s, opd: s, wound: s, ped: s });
   const setEsiField = (index, field, value) => setEsi(esi.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
+
+  const plColumns = [
+    { label: "Year", show: true, bold: true, render: (r, i) => `${r.year}${i === 2 ? " *" : ""}` },
+    { label: "Total OPD/mo", show: true, bold: true, render: (r) => Math.round((r.er + r.opd + r.wound + r.ped) / 12).toLocaleString() },
+    { label: "ER/mo", show: true, render: (r) => Math.round(r.er / 12).toLocaleString() },
+    { label: "OPD/mo", show: services.opd, render: (r) => Math.round(r.opd / 12).toLocaleString() },
+    { label: "Specialty/mo", show: services.wound, render: (r) => Math.round(r.wound / 12).toLocaleString() },
+    { label: "Ped/mo", show: services.ped, render: (r) => Math.round(r.ped / 12).toLocaleString() },
+    { label: "Obs/mo", show: services.obs, bold: true, render: (r) => Math.round(r.obs / 12).toLocaleString() },
+    { label: "ER/day", show: true, render: (r) => (r.er / 365).toFixed(1) },
+    { label: "Supply trigger", show: true, bold: true, colorFn: (i) => (yearlySupply[i].trigger ? C.red : C.green), render: (r, i) => yearlySupply[i].text },
+    { label: "Facility Rev", show: true, render: (r) => r.spokeRev.toFixed(1) },
+    { label: "OpEx", show: true, render: (r) => r.opex.toFixed(1) },
+    { label: "Net S", show: true, render: (r) => r.netS.toFixed(1) },
+    { label: "Downstream", show: true, render: (r) => r.downstream.toFixed(1) },
+    { label: "Net G", show: true, render: (r) => r.netG.toFixed(1) },
+    { label: "Cum G", show: true, bold: true, render: (r) => r.cumG.toFixed(0) },
+  ].filter((col) => col.show);
 
   return (
     <main className="min-h-screen p-4 md:p-6" style={{ background: C.bg, color: C.ink, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -542,7 +603,7 @@ function DashboardStage({
               { key: "opd", volume: y3.opd, price: svcRev.opd },
               { key: "wound", volume: y3.wound, price: svcRev.wound },
               { key: "ped", volume: y3.ped, price: svcRev.ped },
-            ].map((row) => (
+            ].filter((row) => row.key === "er" || services[row.key]).map((row) => (
               <div key={row.key} className="flex items-center gap-2 py-1.5" style={{ borderTop: `1px solid ${C.line}` }}>
                 <div className="w-28 shrink-0">
                   <div className="text-xs font-bold">{SERVICE_LABELS[row.key]}</div>
@@ -577,7 +638,7 @@ function DashboardStage({
           <Panel C={C}>
             <b style={{ color: C.navyDeep }}>3 · Contribution margin</b>
             <div className="text-xs mt-1 mb-3" style={{ color: C.muted }}>Adjust margin for each core service. This changes variable cost and net cash flow immediately.</div>
-            {["er", "obs", "opd", "wound", "ped"].map((key) => (
+            {["er", "obs", "opd", "wound", "ped"].filter((key) => key === "er" || services[key]).map((key) => (
               <Slider key={key} C={C} label={SERVICE_LABELS[key]} value={margin[key]} set={(v) => setMargin({ ...margin, [key]: v })} min={20} max={95} step={1} format={(v) => `${v}%`} />
             ))}
           </Panel>
@@ -615,7 +676,7 @@ function DashboardStage({
               { key: "opd", label: "OPD General", step: 100 },
               { key: "wound", label: "Specialty Clinic", step: 100 },
               { key: "ped", label: "Pediatric", step: 100 },
-            ].map((row) => (
+            ].filter((row) => services[row.key]).map((row) => (
               <label key={row.key} className="flex justify-between items-center gap-2 py-1.5 text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
                 <span className="font-medium">{row.label}</span>
                 <NumInput C={C} value={svcRev[row.key]} step={row.step} onChange={(v) => setSvcRev({ ...svcRev, [row.key]: v })} width={20} />
@@ -636,11 +697,11 @@ function DashboardStage({
               </div>
             ))}
             {[
-              { group: "obsCap", label: "Observation pool capture" },
-              { group: "opdRatio", label: "OPD visits as x of ER" },
-              { group: "specialtyMult", label: "Specialty follow-up multiplier" },
-              { group: "pedFactor", label: "Pediatric scenario factor" },
-            ].map(({ group, label }) => (
+              { group: "obsCap", label: "Observation pool capture", key: "obs" },
+              { group: "opdRatio", label: "OPD visits as x of ER", key: "opd" },
+              { group: "specialtyMult", label: "Specialty follow-up multiplier", key: "wound" },
+              { group: "pedFactor", label: "Pediatric scenario factor", key: "ped" },
+            ].filter(({ key }) => services[key]).map(({ group, label }) => (
               <div key={group} className="mt-2">
                 <div className="text-xs font-bold mb-1" style={{ color: C.muted }}>{label}</div>
                 <div className="flex items-center gap-1">
@@ -695,10 +756,10 @@ function DashboardStage({
                 <Tooltip formatter={(v) => [fmtM(v)]} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Area stackId="r" dataKey="revER" name="ER" fill={C.navy} stroke={C.navy} />
-                <Area stackId="r" dataKey="revOPD" name="OPD" fill="#3E6FA3" stroke="#3E6FA3" />
-                <Area stackId="r" dataKey="revPed" name="Pediatric" fill="#6E98C4" stroke="#6E98C4" />
-                <Area stackId="r" dataKey="revWound" name="Specialty" fill="#A3C0DC" stroke="#A3C0DC" />
-                <Area stackId="r" dataKey="revObs" name="Obs" fill={C.red} stroke={C.red} />
+                {services.opd && <Area stackId="r" dataKey="revOPD" name="OPD" fill="#3E6FA3" stroke="#3E6FA3" />}
+                {services.ped && <Area stackId="r" dataKey="revPed" name="Pediatric" fill="#6E98C4" stroke="#6E98C4" />}
+                {services.wound && <Area stackId="r" dataKey="revWound" name="Specialty" fill="#A3C0DC" stroke="#A3C0DC" />}
+                {services.obs && <Area stackId="r" dataKey="revObs" name="Obs" fill={C.red} stroke={C.red} />}
                 <Area stackId="r" dataKey="downstream" name="Downstream" fill={C.green} stroke={C.green} fillOpacity={0.5} />
               </AreaChart>
             </ResponsiveContainer>
@@ -753,28 +814,18 @@ function DashboardStage({
             <b style={{ color: C.navyDeep }}>Y1-Y10 P&L</b>
             <div className="overflow-x-auto mt-2">
               <table className="w-full text-xs tabular-nums">
-                <thead><tr style={{ background: C.navy, color: "#fff" }}>{["Year", "Total OPD/mo", "ER/mo", "OPD/mo", "Specialty/mo", "Ped/mo", "Obs/mo", "ER/day", "Supply trigger", "Facility Rev", "OpEx", "Net S", "Downstream", "Net G", "Cum G"].map((h) => <th key={h} className="px-2 py-1.5 text-right first:text-left whitespace-nowrap">{h}</th>)}</tr></thead>
+                <thead><tr style={{ background: C.navy, color: "#fff" }}>{plColumns.map((col) => <th key={col.label} className="px-2 py-1.5 text-right first:text-left whitespace-nowrap">{col.label}</th>)}</tr></thead>
                 <tbody>
                   {data.years.map((r, i) => {
                     const supply = yearlySupply[i];
                     const rowBg = supply.trigger ? alertBg : i === 2 ? C.hilite : C.card;
                     return (
                       <tr key={r.year} style={{ background: rowBg, borderBottom: `1px solid ${C.line}` }}>
-                        <td className="px-2 py-1 font-bold">{r.year}{i === 2 ? " *" : ""}</td>
-                        <td className="px-2 py-1 text-right font-bold">{Math.round((r.er + r.opd + r.wound + r.ped) / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right">{Math.round(r.er / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right">{Math.round(r.opd / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right">{Math.round(r.wound / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right">{Math.round(r.ped / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right font-bold">{Math.round(r.obs / 12).toLocaleString()}</td>
-                        <td className="px-2 py-1 text-right">{(r.er / 365).toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right font-bold" style={{ color: supply.trigger ? C.red : C.green }}>{supply.text}</td>
-                        <td className="px-2 py-1 text-right">{r.spokeRev.toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right">{r.opex.toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right">{r.netS.toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right">{r.downstream.toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right">{r.netG.toFixed(1)}</td>
-                        <td className="px-2 py-1 text-right font-bold">{r.cumG.toFixed(0)}</td>
+                        {plColumns.map((col) => (
+                          <td key={col.label} className={`px-2 py-1 text-right first:text-left${col.bold ? " font-bold" : ""}`} style={col.colorFn ? { color: col.colorFn(i) } : undefined}>
+                            {col.render(r, i)}
+                          </td>
+                        ))}
                       </tr>
                     );
                   })}
@@ -782,7 +833,7 @@ function DashboardStage({
               </table>
             </div>
             <div className="text-xs mt-2 leading-relaxed" style={{ color: C.muted }}>
-              Light red rows mean the year exceeds bed/room/chair/bay capacity or the modeled staff need is above your baseline FTE. OPD/mo includes ER, OPD General, Specialty, and Pediatric visits; Obs/mo is separated for bed pressure.
+              Light red rows mean the year exceeds bed/room/chair/bay capacity or the modeled staff need is above your baseline FTE. OPD/mo includes ER plus whichever of OPD General, Specialty, and Pediatric are offered; Obs/mo is separated for bed pressure.
             </div>
           </Panel>
 
