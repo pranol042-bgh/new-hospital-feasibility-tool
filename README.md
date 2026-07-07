@@ -2,6 +2,8 @@
 
 Interactive React tool for assessing the feasibility of launching a new hospital. A setup wizard collects your own project scenario — catchment demand, facility design (bays/beds/rooms), service lines, CapEx, cost base, and growth assumptions — then hands off to an interactive dashboard for exploring volume, revenue, payback, and capacity under Conservative / Realistic / Aggressive scenarios.
 
+Live app: https://pranol042-bgh.github.io/new-hospital-feasibility-tool/
+
 Login: user `BPK`, password `B1719`.
 
 ## Run locally
