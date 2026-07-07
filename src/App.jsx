@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -267,6 +267,18 @@ function NumInput({ C, value, onChange, step = 1, min = 0, width = 20 }) {
 
 const WIZARD_STEPS = ["Project & demand", "Facility design", "Cost & capital"];
 
+const STORAGE_KEY = "new-hospital-feasibility-state-v1";
+
+function loadSaved() {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function NewHospitalApp() {
   const [dark, setDark] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(() => (typeof window === "undefined" ? false : window.sessionStorage.getItem("new-hospital-auth") === "ok"));
@@ -274,28 +286,47 @@ export default function NewHospitalApp() {
   const [loginPass, setLoginPass] = useState("");
   const [loginError, setLoginError] = useState("");
 
-  const [stage, setStage] = useState("setup");
-  const [wizardStep, setWizardStep] = useState(0);
+  const [saved] = useState(() => loadSaved());
+  const [stage, setStage] = useState(saved.stage ?? "setup");
+  const [wizardStep, setWizardStep] = useState(saved.wizardStep ?? 0);
 
-  const [projectName, setProjectName] = useState("New Hospital Project");
-  const [location, setLocation] = useState("");
-  const [services, setServices] = useState(DEFAULT_SERVICES);
-  const [base, setBase] = useState(DEFAULT_BASE);
-  const [facility, setFacility] = useState(DEFAULT_FACILITY);
-  const [tiers, setTiers] = useState(DEFAULT_TIERS);
-  const [capexParts, setCapexParts] = useState({ construction: 50, equipment: 18, it: 5 });
-  const [rent, setRent] = useState(150000);
-  const [growth, setGrowth] = useState(0.04);
-  const [infl, setInfl] = useState(0.03);
+  const [projectName, setProjectName] = useState(saved.projectName ?? "New Hospital Project");
+  const [location, setLocation] = useState(saved.location ?? "");
+  const [services, setServices] = useState(saved.services ?? DEFAULT_SERVICES);
+  const [base, setBase] = useState(saved.base ?? DEFAULT_BASE);
+  const [facility, setFacility] = useState(saved.facility ?? DEFAULT_FACILITY);
+  const [tiers, setTiers] = useState(saved.tiers ?? DEFAULT_TIERS);
+  const [capexParts, setCapexParts] = useState(saved.capexParts ?? { construction: 50, equipment: 18, it: 5 });
+  const [rent, setRent] = useState(saved.rent ?? 150000);
+  const [growth, setGrowth] = useState(saved.growth ?? 0.04);
+  const [infl, setInfl] = useState(saved.infl ?? 0.03);
 
-  const [scen, setScen] = useState(DEFAULT_SCEN);
-  const [view, setView] = useState("G");
-  const [margin, setMargin] = useState(DEFAULT_MARGIN);
-  const [esi, setEsi] = useState(ACUITY_DEFAULT);
-  const [svcRev, setSvcRev] = useState(DEFAULT_SVC_REV);
+  const [scen, setScen] = useState(saved.scen ?? DEFAULT_SCEN);
+  const [view, setView] = useState(saved.view ?? "G");
+  const [margin, setMargin] = useState(saved.margin ?? DEFAULT_MARGIN);
+  const [esi, setEsi] = useState(saved.esi ?? ACUITY_DEFAULT);
+  const [svcRev, setSvcRev] = useState(saved.svcRev ?? DEFAULT_SVC_REV);
+  const [lastSaved, setLastSaved] = useState(null);
 
   const C = dark ? DARK : LIGHT;
   const capex = capexParts.construction + capexParts.equipment + capexParts.it;
+
+  useEffect(() => {
+    if (!isUnlocked) return;
+    const payload = { stage, wizardStep, projectName, location, services, base, facility, tiers, capexParts, rent, growth, infl, scen, view, margin, esi, svcRev };
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      setLastSaved(Date.now());
+    } catch {
+      // localStorage unavailable (private browsing, quota, etc.) — edits still work, just won't persist.
+    }
+  }, [isUnlocked, stage, wizardStep, projectName, location, services, base, facility, tiers, capexParts, rent, growth, infl, scen, view, margin, esi, svcRev]);
+
+  const resetProject = () => {
+    if (!window.confirm("Clear all saved data and start a new project? This cannot be undone.")) return;
+    window.localStorage.removeItem(STORAGE_KEY);
+    window.location.reload();
+  };
 
   const toggleService = (key) => setServices({ ...services, [key]: !services[key] });
   const setBaseField = (key, value) => setBase({ ...base, [key]: value });
@@ -347,11 +378,15 @@ export default function NewHospitalApp() {
           <h1 className="text-xl md:text-2xl font-bold m-0" style={{ color: C.navyDeep }}>{projectName || "New Hospital Project"}</h1>
           <div className="text-xs mt-1" style={{ color: C.muted }}>{location ? `${location} · ` : ""}Define your own scenario, then explore payback, revenue, and capacity.</div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs" style={{ color: C.muted }} title={lastSaved ? `Last saved ${new Date(lastSaved).toLocaleTimeString()}` : ""}>
+            {lastSaved ? `Saved ${new Date(lastSaved).toLocaleTimeString()}` : ""}
+          </span>
           {stage === "dashboard" && (
             <button className="px-3 py-1 rounded text-xs font-bold" onClick={() => { setWizardStep(0); setStage("setup"); }} style={{ background: C.hilite, color: C.navy, border: `1px solid ${C.line}` }}>Edit setup</button>
           )}
           <button className="px-3 py-1 rounded text-xs font-bold" onClick={() => setDark(!dark)} style={{ background: C.hilite, color: C.navy, border: `1px solid ${C.line}` }}>{dark ? "Day mode" : "Night mode"}</button>
+          <button className="px-3 py-1 rounded text-xs font-bold" onClick={resetProject} style={{ background: C.hilite, color: C.red, border: `1px solid ${C.line}` }}>New project</button>
         </div>
       </div>
     </header>
